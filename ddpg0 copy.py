@@ -1,10 +1,4 @@
-#!/usr/bin/env python2
-# -*- coding: utf-8 -*-
-"""
-Created on Thu Dec  6 01:36:24 2018
 
-@author: wuyuankai
-"""
 
 from __future__ import division
 #from Priority_Replay import SumTree, Memory
@@ -16,10 +10,14 @@ import os
 import sys
 
 tools = '/usr/share/sumo/tools'
-tools = r"C:\Program Files (x86)\Eclipse\Sumo\tools"
+tools = r"C:/Program Files (x86)/Eclipse/Sumo/tools"
 sys.path.append(tools)
 import traci
 from networks0 import rm_vsl_co
+
+
+# change the working dir to current dir
+os.chdir(os.getcwd())
 
 EP_MAX = 600
 LR_A = 0.0002    # learning rate for actor
@@ -34,7 +32,209 @@ RENDER = False
 ###############################  DDPG  ####################################
 
 
-class VSL_DDPG_PR(object):
+class Actor(tf.keras.Model):
+    def __init__(self, s_dim, a_dim):
+        super(Actor, self).__init__()
+        # Layer sizes mirror the original TF1 implementation: 60 units, then output dimension a_dim
+        self.fc1 = tf.keras.layers.Dense(60, activation='relu',
+                                         kernel_initializer='glorot_uniform',
+                                         name='actor_l1')
+        # Output layer with sigmoid activation, no bias, to be scaled by 8
+        self.fc2 = tf.keras.layers.Dense(a_dim, activation='sigmoid',
+                                         use_bias=False,
+                                         kernel_initializer='glorot_uniform',
+                                         name='actor_l2')
+
+    def call(self, s):
+        x = self.fc1(s)
+        a_raw = self.fc2(x)
+        # Scale to match original range: sigmoid outputs in [0,1], so multiply by 8
+        return a_raw * 8.0
+
+
+class Critic(tf.keras.Model):
+    def __init__(self, s_dim, a_dim):
+        super(Critic, self).__init__()
+        # First layer combines state and action with separate weight matrices and a bias
+        n_l1 = 50
+        # Equivalent to original w1_s and w1_a without biases
+        self.w1_s = tf.keras.layers.Dense(n_l1, use_bias=False,
+                                          kernel_initializer='glorot_uniform',
+                                          name='critic_w1_s')
+        self.w1_a = tf.keras.layers.Dense(n_l1, use_bias=False,
+                                          kernel_initializer='glorot_uniform',
+                                          name='critic_w1_a')
+        # Bias vector b1 of shape [n_l1]
+        self.b1 = tf.Variable(tf.zeros(shape=(n_l1,)), trainable=True, name='critic_b1')
+        # Final output layer to produce Q-value
+        self.q_out = tf.keras.layers.Dense(1,
+                                           kernel_initializer='glorot_uniform',
+                                           name='critic_q')
+
+    def call(self, s, a):
+        # s: [batch, s_dim], a: [batch, a_dim]
+        net_s = self.w1_s(s)         # [batch, n_l1]
+        net_a = self.w1_a(a)         # [batch, n_l1]
+        net = tf.nn.relu(net_s + net_a + self.b1)  # [batch, n_l1]
+        q = self.q_out(net)          # [batch, 1]
+        return q
+
+
+class VSL_DDPG_PR:
+    def __init__(self, a_dim, s_dim):
+        self.a_dim = a_dim
+        self.s_dim = s_dim
+
+        # Experience replay memory: numpy array of shape (MEMORY_CAPACITY, s_dim*2 + a_dim + 1)
+        self.memory = np.zeros((MEMORY_CAPACITY, s_dim * 2 + a_dim + 1), dtype=np.float32)
+        self.pointer = 0
+
+        # Create the actor and critic networks
+        self.actor = Actor(s_dim, a_dim)
+        self.critic = Critic(s_dim, a_dim)
+
+        # Create target networks
+        self.actor_target = Actor(s_dim, a_dim)
+        self.critic_target = Critic(s_dim, a_dim)
+
+        # Initialize target networks with the same weights as the originals
+        # This must be done once (after the models are built)
+        dummy_state = tf.zeros((1, s_dim))
+        dummy_action = tf.zeros((1, a_dim))
+        _ = self.actor(dummy_state)
+        _ = self.critic(dummy_state, dummy_action)
+        _ = self.actor_target(dummy_state)
+        _ = self.critic_target(dummy_state, dummy_action)
+
+        self._update_target_weights(tau=1.0)  # hard update for initialization
+
+        # Optimizers
+        self.actor_optimizer = tf.keras.optimizers.Adam(learning_rate=LR_A)
+        self.critic_optimizer = tf.keras.optimizers.Adam(learning_rate=LR_C)
+
+        # For saving and loading
+        self.ckpt = tf.train.Checkpoint(actor=self.actor,
+                                        critic=self.critic,
+                                        actor_target=self.actor_target,
+                                        critic_target=self.critic_target,
+                                        actor_opt=self.actor_optimizer,
+                                        critic_opt=self.critic_optimizer)
+        self.ckpt_manager = tf.train.CheckpointManager(self.ckpt,
+                                                        directory='ddpg_checkpoints',
+                                                        max_to_keep=1)
+
+    def _update_target_weights(self, tau=None):
+        """
+        Soft-update or hard-update (if tau=1.0) target network weights:
+        target_var = tau * main_var + (1 - tau) * target_var
+        """
+        if tau is None:
+            tau = TAU
+        # Actor weights
+        actor_weights = self.actor.trainable_variables
+        actor_target_weights = self.actor_target.trainable_variables
+        for w, w_t in zip(actor_weights, actor_target_weights):
+            w_t.assign(tau * w + (1.0 - tau) * w_t)
+        # Critic weights
+        critic_weights = self.critic.trainable_variables
+        critic_target_weights = self.critic_target.trainable_variables
+        for w, w_t in zip(critic_weights, critic_target_weights):
+            w_t.assign(tau * w + (1.0 - tau) * w_t)
+
+    def choose_action(self, s):
+        """
+        Given a single state s (shape: [s_dim, ]), return a single action (shape: [a_dim, ]).
+        """
+        s = tf.convert_to_tensor(s.reshape(1, -1), dtype=tf.float32)  # [1, s_dim]
+        a = self.actor(s)  # [1, a_dim]
+        return a.numpy()[0]
+
+    def store_transition(self, s, a, r, s_):
+        """
+        Store one transition in replay memory.
+        s:   [s_dim, ]
+        a:   [a_dim, ]
+        r:   scalar reward
+        s_:  [s_dim, ]
+        """
+        transition = np.hstack((s, a, [r], s_))
+        index = self.pointer % MEMORY_CAPACITY
+        self.memory[index, :] = transition
+        self.pointer += 1
+
+    @tf.function
+    def _train_step(self, bs, ba, br, bs_):
+        """
+        One training step for both actor and critic. Uses @tf.function for graph execution.
+        bs:  [batch, s_dim]
+        ba:  [batch, a_dim]
+        br:  [batch, 1]
+        bs_: [batch, s_dim]
+        """
+        # Compute target actions and target Q-values
+        a_target = self.actor_target(bs_)                   # [batch, a_dim]
+        q_target_next = self.critic_target(bs_, a_target)   # [batch, 1]
+        q_target = br + GAMMA * q_target_next               # [batch, 1]
+
+        # Critic update: minimize MSE between q(bs, ba) and q_target
+        with tf.GradientTape() as tape_c:
+            q_eval = self.critic(bs, ba)                    # [batch, 1]
+            critic_loss = tf.math.reduce_mean(tf.square(q_target - q_eval))
+        critic_grads = tape_c.gradient(critic_loss, self.critic.trainable_variables)
+        self.critic_optimizer.apply_gradients(zip(critic_grads, self.critic.trainable_variables))
+
+        # Actor update: maximize expected Q-value from critic (i.e., minimize -Q)
+        with tf.GradientTape() as tape_a:
+            a_eval = self.actor(bs)                         # [batch, a_dim]
+            q_for_a = self.critic(bs, a_eval)               # [batch, 1]
+            # We want to maximize Q, so minimize -mean(Q)
+            actor_loss = -tf.math.reduce_mean(q_for_a)
+        actor_grads = tape_a.gradient(actor_loss, self.actor.trainable_variables)
+        self.actor_optimizer.apply_gradients(zip(actor_grads, self.actor.trainable_variables))
+
+        # Soft-update target networks
+        self._update_target_weights()
+
+    def learn(self):
+        """
+        Sample a batch from memory and perform one training step.
+        """
+        # Randomly sample a batch of transitions
+        indices = np.random.choice(min(self.pointer, MEMORY_CAPACITY), size=BATCH_SIZE)
+        bt = self.memory[indices, :]
+
+        bs = bt[:, :self.s_dim]                                # [batch, s_dim]
+        ba = bt[:, self.s_dim:self.s_dim + self.a_dim]         # [batch, a_dim]
+        br = bt[:, self.s_dim + self.a_dim:self.s_dim + self.a_dim + 1]  # [batch, 1]
+        bs_ = bt[:, -self.s_dim:]                               # [batch, s_dim]
+
+        # Convert to tensors
+        bs = tf.convert_to_tensor(bs, dtype=tf.float32)
+        ba = tf.convert_to_tensor(ba, dtype=tf.float32)
+        br = tf.convert_to_tensor(br, dtype=tf.float32)
+        bs_ = tf.convert_to_tensor(bs_, dtype=tf.float32)
+
+        # Perform a combined train step
+        self._train_step(bs, ba, br, bs_)
+
+    def savemodel(self):
+        """
+        Save the entire DDPG (actor, critic, their target networks, and optimizers) to a checkpoint.
+        """
+        self.ckpt_manager.save()
+
+    def loadmodel(self):
+        """
+        Restore from the latest checkpoint if available.
+        """
+        latest_ckpt = self.ckpt_manager.latest_checkpoint
+        if latest_ckpt:
+            self.ckpt.restore(latest_ckpt)
+        else:
+            print("No checkpoint found. Starting from scratch.")
+
+
+class VSL_DDPG_PR_(object):
     def __init__(self, a_dim, s_dim,):
         #self.memory = Memory(capacity=MEMORY_CAPACITY)
         self.memory = np.zeros((MEMORY_CAPACITY, s_dim * 2 + a_dim + 1), dtype=np.float32)
@@ -122,6 +322,7 @@ class VSL_DDPG_PR(object):
     def loadmodel(self,):
         loader = tf.train.import_meta_graph('ddpg_networkss_withoutexplore/ddpg.ckpt.meta')
         loader.restore(self.sess, tf.train.latest_checkpoint("ddpg_networkss_withoutexplore/"))
+
 
 def from_a_to_mlv(a):
     return 17.8816 + 2.2352*np.floor(a)
