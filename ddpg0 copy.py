@@ -1,7 +1,9 @@
 
 
 from __future__ import division
-#from Priority_Replay import SumTree, Memory
+from networks0 import rm_vsl_co
+import traci
+# from Priority_Replay import SumTree, Memory
 import tensorflow as tf
 import numpy as np
 import time
@@ -12,8 +14,6 @@ import sys
 tools = '/usr/share/sumo/tools'
 tools = r"C:/Program Files (x86)/Eclipse/Sumo/tools"
 sys.path.append(tools)
-import traci
-from networks0 import rm_vsl_co
 
 
 # change the working dir to current dir
@@ -28,8 +28,9 @@ MEMORY_CAPACITY = 64
 BATCH_SIZE = 32
 
 RENDER = False
+SIM_TIME = 3600
 
-###############################  DDPG  ####################################
+# ##############################  DDPG  ####################################
 
 
 class Actor(tf.keras.Model):
@@ -65,7 +66,8 @@ class Critic(tf.keras.Model):
                                           kernel_initializer='glorot_uniform',
                                           name='critic_w1_a')
         # Bias vector b1 of shape [n_l1]
-        self.b1 = tf.Variable(tf.zeros(shape=(n_l1,)), trainable=True, name='critic_b1')
+        self.b1 = tf.Variable(tf.zeros(shape=(n_l1,)),
+                              trainable=True, name='critic_b1')
         # Final output layer to produce Q-value
         self.q_out = tf.keras.layers.Dense(1,
                                            kernel_initializer='glorot_uniform',
@@ -86,7 +88,8 @@ class VSL_DDPG_PR:
         self.s_dim = s_dim
 
         # Experience replay memory: numpy array of shape (MEMORY_CAPACITY, s_dim*2 + a_dim + 1)
-        self.memory = np.zeros((MEMORY_CAPACITY, s_dim * 2 + a_dim + 1), dtype=np.float32)
+        self.memory = np.zeros(
+            (MEMORY_CAPACITY, s_dim * 2 + a_dim + 1), dtype=np.float32)
         self.pointer = 0
 
         # Create the actor and critic networks
@@ -120,8 +123,8 @@ class VSL_DDPG_PR:
                                         actor_opt=self.actor_optimizer,
                                         critic_opt=self.critic_optimizer)
         self.ckpt_manager = tf.train.CheckpointManager(self.ckpt,
-                                                        directory='ddpg_checkpoints',
-                                                        max_to_keep=1)
+                                                       directory='ddpg_checkpoints',
+                                                       max_to_keep=1)
 
     def _update_target_weights(self, tau=None):
         """
@@ -145,7 +148,8 @@ class VSL_DDPG_PR:
         """
         Given a single state s (shape: [s_dim, ]), return a single action (shape: [a_dim, ]).
         """
-        s = tf.convert_to_tensor(s.reshape(1, -1), dtype=tf.float32)  # [1, s_dim]
+        s = tf.convert_to_tensor(
+            s.reshape(1, -1), dtype=tf.float32)  # [1, s_dim]
         a = self.actor(s)  # [1, a_dim]
         return a.numpy()[0]
 
@@ -180,8 +184,10 @@ class VSL_DDPG_PR:
         with tf.GradientTape() as tape_c:
             q_eval = self.critic(bs, ba)                    # [batch, 1]
             critic_loss = tf.math.reduce_mean(tf.square(q_target - q_eval))
-        critic_grads = tape_c.gradient(critic_loss, self.critic.trainable_variables)
-        self.critic_optimizer.apply_gradients(zip(critic_grads, self.critic.trainable_variables))
+        critic_grads = tape_c.gradient(
+            critic_loss, self.critic.trainable_variables)
+        self.critic_optimizer.apply_gradients(
+            zip(critic_grads, self.critic.trainable_variables))
 
         # Actor update: maximize expected Q-value from critic (i.e., minimize -Q)
         with tf.GradientTape() as tape_a:
@@ -189,8 +195,10 @@ class VSL_DDPG_PR:
             q_for_a = self.critic(bs, a_eval)               # [batch, 1]
             # We want to maximize Q, so minimize -mean(Q)
             actor_loss = -tf.math.reduce_mean(q_for_a)
-        actor_grads = tape_a.gradient(actor_loss, self.actor.trainable_variables)
-        self.actor_optimizer.apply_gradients(zip(actor_grads, self.actor.trainable_variables))
+        actor_grads = tape_a.gradient(
+            actor_loss, self.actor.trainable_variables)
+        self.actor_optimizer.apply_gradients(
+            zip(actor_grads, self.actor.trainable_variables))
 
         # Soft-update target networks
         self._update_target_weights()
@@ -200,13 +208,16 @@ class VSL_DDPG_PR:
         Sample a batch from memory and perform one training step.
         """
         # Randomly sample a batch of transitions
-        indices = np.random.choice(min(self.pointer, MEMORY_CAPACITY), size=BATCH_SIZE)
+        indices = np.random.choice(
+            min(self.pointer, MEMORY_CAPACITY), size=BATCH_SIZE)
         bt = self.memory[indices, :]
 
         bs = bt[:, :self.s_dim]                                # [batch, s_dim]
         ba = bt[:, self.s_dim:self.s_dim + self.a_dim]         # [batch, a_dim]
-        br = bt[:, self.s_dim + self.a_dim:self.s_dim + self.a_dim + 1]  # [batch, 1]
-        bs_ = bt[:, -self.s_dim:]                               # [batch, s_dim]
+        br = bt[:, self.s_dim + self.a_dim:self.s_dim +
+                self.a_dim + 1]  # [batch, 1]
+        # [batch, s_dim]
+        bs_ = bt[:, -self.s_dim:]
 
         # Convert to tensors
         bs = tf.convert_to_tensor(bs, dtype=tf.float32)
@@ -236,7 +247,7 @@ class VSL_DDPG_PR:
 
 class VSL_DDPG_PR_(object):
     def __init__(self, a_dim, s_dim,):
-        #self.memory = Memory(capacity=MEMORY_CAPACITY)
+        # self.memory = Memory(capacity=MEMORY_CAPACITY)
         self.memory = np.zeros((MEMORY_CAPACITY, s_dim * 2 + a_dim + 1), dtype=np.float32)
         self.pointer = 0
         self.sess = tf.Session()
@@ -256,28 +267,28 @@ class VSL_DDPG_PR_(object):
             return ema.average(getter(name, *args, **kwargs))
 
         target_update = [ema.apply(a_params), ema.apply(c_params)]      # soft update operation
-        a_ = self._build_a(self.S_, reuse=True, custom_getter=ema_getter)   # replaced target parameters
+        # replaced target parameters
+        a_ = self._build_a(self.S_, reuse=True, custom_getter=ema_getter)
         q_ = self._build_c(self.S_, a_, reuse=True, custom_getter=ema_getter)
 
         a_loss = - tf.reduce_mean(q)  # maximize the q
         self.atrain = tf.train.AdamOptimizer(LR_A).minimize(a_loss, var_list=a_params)
         self.td = self.R + GAMMA * q_ - q
 
-        with tf.control_dependencies(target_update):    # soft replacement happened at here
+        # soft replacement happened at here
+        with tf.control_dependencies(target_update):
             q_target = self.R + GAMMA * q_
             td_error = tf.losses.mean_squared_error(labels=q_target, predictions=q)
             self.ctrain = tf.train.AdamOptimizer(LR_C).minimize(td_error, var_list=c_params)
 
         self.sess.run(tf.global_variables_initializer())
-        self.saver = tf.train.Saver(max_to_keep = 1)
-
+        self.saver = tf.train.Saver(max_to_keep=1)
 
     def choose_action(self, s):
         return self.sess.run(self.a, {self.S: s[np.newaxis, :]})[0]
 
-
     def learn(self):
-#        tree_idx, bt, ISWeights = self.memory.sample(BATCH_SIZE)
+        #        tree_idx, bt, ISWeights = self.memory.sample(BATCH_SIZE)
         indices = np.random.choice(MEMORY_CAPACITY, size=BATCH_SIZE)
         bt = self.memory[indices, :]
         bs = bt[:, :self.s_dim]
@@ -292,44 +303,53 @@ class VSL_DDPG_PR_(object):
 #    def store_transition(self, s, a, r, s_):
 #        transition = np.hstack((s, a, r, s_))
 #        self.memory.store(transition)
+
+
     def store_transition(self, s, a, r, s_):
         transition = np.hstack((s, a, [r], s_))
-        index = self.pointer % MEMORY_CAPACITY  # replace the old memory with new memory
+        # replace the old memory with new memory
+        index = self.pointer % MEMORY_CAPACITY
         self.memory[index, :] = transition
         self.pointer += 1
-
 
     def _build_a(self, s, reuse=None, custom_getter=None):
         trainable = True if reuse is None else False
         with tf.variable_scope('Actor', reuse=reuse, custom_getter=custom_getter):
-            neta = tf.layers.dense(s, 60, activation=tf.nn.relu, name='l1', trainable=trainable)
-            a = tf.layers.dense(neta, self.a_dim, activation=tf.nn.sigmoid, name='l2', trainable=trainable,  use_bias=False)
+            neta = tf.layers.dense(
+                s, 60, activation=tf.nn.relu, name='l1', trainable=trainable)
+            a = tf.layers.dense(neta, self.a_dim, activation=tf.nn.sigmoid,
+                                name='l2', trainable=trainable,  use_bias=False)
             return tf.multiply(a, 8, name='scaled_a')
 
     def _build_c(self, s, a, reuse=None, custom_getter=None):
         trainable = True if reuse is None else False
         with tf.variable_scope('Critic', reuse=reuse, custom_getter=custom_getter):
             n_l1 = 50
-            w1_s = tf.get_variable('w1_s', [self.s_dim, n_l1], trainable=trainable)
-            w1_a = tf.get_variable('w1_a', [self.a_dim, n_l1], trainable=trainable)
+            w1_s = tf.get_variable(
+                'w1_s', [self.s_dim, n_l1], trainable=trainable)
+            w1_a = tf.get_variable(
+                'w1_a', [self.a_dim, n_l1], trainable=trainable)
             b1 = tf.get_variable('b1', [1, n_l1], trainable=trainable)
             netc = tf.nn.relu(tf.matmul(s, w1_s) + tf.matmul(a, w1_a) + b1)
             return tf.layers.dense(netc, 1, trainable=trainable)
 
     def savemodel(self,):
-        self.saver.save(self.sess,'ddpg_networkss_withoutexplore/' + 'ddpg.ckpt')
+        self.saver.save(
+            self.sess, 'ddpg_networkss_withoutexplore/' + 'ddpg.ckpt')
 
     def loadmodel(self,):
-        loader = tf.train.import_meta_graph('ddpg_networkss_withoutexplore/ddpg.ckpt.meta')
-        loader.restore(self.sess, tf.train.latest_checkpoint("ddpg_networkss_withoutexplore/"))
+        loader = tf.train.import_meta_graph(
+            'ddpg_networkss_withoutexplore/ddpg.ckpt.meta')
+        loader.restore(self.sess, tf.train.latest_checkpoint(
+            "ddpg_networkss_withoutexplore/"))
 
 
 def from_a_to_mlv(a):
-    return 17.8816 + 2.2352*np.floor(a)
+    return 17.8816 + 2.2352 * np.floor(a)
 
 
-vsl_controller = VSL_DDPG_PR(s_dim = 13, a_dim = 5)
-net = rm_vsl_co(visualization = False)
+vsl_controller = VSL_DDPG_PR(s_dim=13, a_dim=5)
+net = rm_vsl_co(visualization=True)
 total_step = 0
 var = 1.5
 att = []
@@ -348,9 +368,9 @@ nox = 0
 pmx = 0
 oflow = 0
 bspeed = 0
-traveltime='meanTravelTime='
+traveltime = 'meanTravelTime='
 for ep in range(EP_MAX):
-    time_start=time.time()
+    time_start = time.time()
     co = 0
     hc = 0
     nox = 0
@@ -358,8 +378,8 @@ for ep in range(EP_MAX):
     ep_r = 0
     oflow = 0
     bspeed = 0
-    v = 29.06*np.ones(5,)
-    net.start_new_simulation(write_newtrips = False)
+    v = 29.06 * np.ones(5,)
+    net.start_new_simulation(write_newtrips=False)
     s, r, simulationSteps, oflow_temp, bspeed_temp, co_temp, hc_temp, nox_temp, pmx_temp = net.run_step(v)
     co = co + co_temp
     hc = hc + hc_temp
@@ -369,9 +389,9 @@ for ep in range(EP_MAX):
     bspeed_temp = bspeed + bspeed_temp
     stime[0:12] = s
     stime[12] = 0
-    while simulationSteps < 18000:
+    while simulationSteps < SIM_TIME:
         a = vsl_controller.choose_action(stime)
-        #a = np.clip(np.random.laplace(a, var), 0, 7.99) The exploration is not very useful
+        # a = np.clip(np.random.laplace(a, var), 0, 7.99) The exploration is not very useful
         v = from_a_to_mlv(a)
         stime_ = np.zeros(13,)
         s_, r, simulationSteps, oflow_temp, bspeed_temp, co_temp, hc_temp, nox_temp, pmx_temp = net.run_step(v)
@@ -386,11 +406,11 @@ for ep in range(EP_MAX):
         oflow = oflow + oflow_temp
         bspeed = bspeed + bspeed_temp
         stime_[0:12] = s_
-        stime_[12] = simulationSteps/18000
+        stime_[12] = simulationSteps / SIM_TIME
         vsl_controller.store_transition(stime, a, r, stime_)
         total_step = total_step + 1
         if total_step > MEMORY_CAPACITY:
-            #var = abs(1.5 - 1.5/600*ep)    # decay the action randomness
+            # var = abs(1.5 - 1.5/600*ep)    # decay the action randomness
             vsl_controller.learn()
         stime = stime_
         ep_r += r
@@ -406,43 +426,43 @@ for ep in range(EP_MAX):
     with open(fname, 'r') as f:  # 打开文件
         lines = f.readlines()  # 读取所有行
         last_line = lines[-2]  # 取最后一行
-    nPos=last_line.index(traveltime)
+    nPos = last_line.index(traveltime)
     aat_tempo = float(last_line[nPos+16:nPos+21])
-    print('Episode:', ep, ' Rewards: %.4f' % ep_r, 'CO(g): %.4f' % co,\
-          'HC(g): %.4f' % hc, 'NOX(g): %.4f' % nox, 'PMX(g): %.4f' % pmx, 'Out-in flow: %.4f' % oflow, \
+    print('Episode:', ep, ' Rewards: %.4f' % ep_r, 'CO(g): %.4f' % co,
+          'HC(g): %.4f' % hc, 'NOX(g): %.4f' % nox, 'PMX(g): %.4f' % pmx, 'Out-in flow: %.4f' % oflow,
           'Bottleneck speed: %.4f' % bspeed, 'Average travel time: %.4f' % aat_tempo)
     if all_ep_r[ep] == max(all_ep_r) and ep > 15:
         vsl_controller.savemodel()
-    time_end=time.time()
-    print('totally cost',time_end-time_start)
+    time_end = time.time()
+    print('totally cost', time_end-time_start)
 
 
 '''
 Comparison with no VSL control
 '''
 
-#time_start=time.time()
-#vsl_controller = VSL_DDPG_PR(s_dim = 13, a_dim = 5)
-#net = rm_vsl_co(visualization = False, incidents = False)
-##net.writenewtrips()
-#traveltime='meanTravelTime='
-#co = 0
-#hc = 0
-#nox = 0
-#pmx = 0
-#ep_r = 0
-#oflow = 0
-#bspeed = 0
-#v = 29.06*np.ones(5,)
-#net.start_new_simulation(write_newtrips = False)
-#s, r, simulationSteps, oflow_temp, bspeed_temp, co_temp, hc_temp, nox_temp, pmx_temp = net.run_step(v)
-#co = co + co_temp
-#hc = hc + hc_temp
-#nox = nox + nox_temp
-#pmx = pmx + pmx_temp
-#oflow = oflow + oflow_temp
-#bspeed_temp = bspeed + bspeed_temp
-#while simulationSteps < 18000:
+# time_start=time.time()
+# vsl_controller = VSL_DDPG_PR(s_dim = 13, a_dim = 5)
+# net = rm_vsl_co(visualization = False, incidents = False)
+# net.writenewtrips()
+# traveltime='meanTravelTime='
+# co = 0
+# hc = 0
+# nox = 0
+# pmx = 0
+# ep_r = 0
+# oflow = 0
+# bspeed = 0
+# v = 29.06*np.ones(5,)
+# net.start_new_simulation(write_newtrips = False)
+# s, r, simulationSteps, oflow_temp, bspeed_temp, co_temp, hc_temp, nox_temp, pmx_temp = net.run_step(v)
+# co = co + co_temp
+# hc = hc + hc_temp
+# nox = nox + nox_temp
+# pmx = pmx + pmx_temp
+# oflow = oflow + oflow_temp
+# bspeed_temp = bspeed + bspeed_temp
+# while simulationSteps < 18000:
 #    s_, r, simulationSteps, oflow_temp, bspeed_temp, co_temp, hc_temp, nox_temp, pmx_temp = net.run_step(v)
 #    co = co + co_temp
 #    hc = hc + hc_temp
@@ -451,41 +471,41 @@ Comparison with no VSL control
 #    oflow = oflow + oflow_temp
 #    bspeed = bspeed + bspeed_temp
 #    ep_r += r
-#net.close()
-#fname = 'output_sumo.xml'
-#with open(fname, 'r') as f:  # 打开文件
+# net.close()
+# fname = 'output_sumo.xml'
+# with open(fname, 'r') as f:  # 打开文件
 #    lines = f.readlines()  # 读取所有行
 #    last_line = lines[-2]  # 取最后一行
-#nPos=last_line.index(traveltime)
-#aat_tempo = float(last_line[nPos+16:nPos+21])
-#print( 'Average Travel Time: %.4f' % aat_tempo, ' Rewards: %.4f' % ep_r, 'CO(g): %.4f' % co,\
+# nPos=last_line.index(traveltime)
+# aat_tempo = float(last_line[nPos+16:nPos+21])
+# print( 'Average Travel Time: %.4f' % aat_tempo, ' Rewards: %.4f' % ep_r, 'CO(g): %.4f' % co,\
 #      'HC(g): %.4f' % hc, 'NOX(g): %.4f' % nox, 'PMX(g): %.4f' % pmx, 'Out-in flow: %.4f' % oflow, \
 #      'Bottleneck speed: %.4f' % bspeed)
-#time_end=time.time()
-#print('totally cost',time_end-time_start)
+# time_end=time.time()
+# print('totally cost',time_end-time_start)
 #
-#time_start=time.time()
-#vsl_controller.loadmodel()
-#co = 0
-#hc = 0
-#nox = 0
-#pmx = 0
-#ep_r = 0
-#oflow = 0
-#bspeed = 0
-#v = 29.06*np.ones(5,)
-#net.start_new_simulation(write_newtrips = False)
-#s, r, simulationSteps, oflow_temp, bspeed_temp, co_temp, hc_temp, nox_temp, pmx_temp = net.run_step(v)
-#co = co + co_temp
-#hc = hc + hc_temp
-#nox = nox + nox_temp
-#pmx = pmx + pmx_temp
-#oflow = oflow + oflow_temp
-#bspeed_temp = bspeed + bspeed_temp
-#stime = np.zeros(13,)
-#stime[0:12] = s
-#stime[12] = 0
-#while simulationSteps < 18000:
+# time_start=time.time()
+# vsl_controller.loadmodel()
+# co = 0
+# hc = 0
+# nox = 0
+# pmx = 0
+# ep_r = 0
+# oflow = 0
+# bspeed = 0
+# v = 29.06*np.ones(5,)
+# net.start_new_simulation(write_newtrips = False)
+# s, r, simulationSteps, oflow_temp, bspeed_temp, co_temp, hc_temp, nox_temp, pmx_temp = net.run_step(v)
+# co = co + co_temp
+# hc = hc + hc_temp
+# nox = nox + nox_temp
+# pmx = pmx + pmx_temp
+# oflow = oflow + oflow_temp
+# bspeed_temp = bspeed + bspeed_temp
+# stime = np.zeros(13,)
+# stime[0:12] = s
+# stime[12] = 0
+# while simulationSteps < 18000:
 #    a = vsl_controller.choose_action(stime)
 #    #a = np.clip(np.random.laplace(a, var), 0, 7.99)
 #    v = from_a_to_mlv(a)
@@ -501,15 +521,15 @@ Comparison with no VSL control
 #    stime_[12] = simulationSteps/18000
 #    stime = stime_
 #    ep_r += r
-#net.close()
-#fname = 'output_sumo.xml'
-#with open(fname, 'r') as f:  # 打开文件
+# net.close()
+# fname = 'output_sumo.xml'
+# with open(fname, 'r') as f:  # 打开文件
 #    lines = f.readlines()  # 读取所有行
 #    last_line = lines[-2]  # 取最后一行
-#nPos=last_line.index(traveltime)
-#aat_tempo = float(last_line[nPos+16:nPos+21])
-#print( 'Average Travel Time: %.4f' % aat_tempo, ' Rewards: %.4f' % ep_r, 'CO(g): %.4f' % co,\
+# nPos=last_line.index(traveltime)
+# aat_tempo = float(last_line[nPos+16:nPos+21])
+# print( 'Average Travel Time: %.4f' % aat_tempo, ' Rewards: %.4f' % ep_r, 'CO(g): %.4f' % co,\
 #      'HC(g): %.4f' % hc, 'NOX(g): %.4f' % nox, 'PMX(g): %.4f' % pmx, 'Out-in flow: %.4f' % oflow, \
 #      'Bottleneck speed: %.4f' % bspeed)
-#time_end=time.time()
-#print('totally cost',time_end-time_start)
+# time_end=time.time()
+# print('totally cost',time_end-time_start)
